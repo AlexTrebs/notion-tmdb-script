@@ -22,21 +22,17 @@ HEADERS  = {
 
 
 def build_filter() -> dict:
-  """Build a reusable Notion filter: title exists AND each target field is empty."""
-  clauses = [
-    {
-      "property": settings.title_prop,
-      "title":    {"is_not_empty": True}
-    }
+  """Build a filter: title exists AND any target field is empty."""
+  empty_clauses = [
+    {"property": prop_name, empty_type: {"is_empty": True}}
+    for prop_name, empty_type in settings.empty_map.items()
   ]
-
-  # Empty properties
-  for prop_name, empty_type in settings.empty_map.items():
-    clauses.append({
-      "property": prop_name,
-      empty_type: {"is_empty": True}
-    })
-  return {"and": clauses}
+  return {
+    "and": [
+      {"property": settings.title_prop, "title": {"is_not_empty": True}},
+      {"or": empty_clauses},
+    ]
+  }
 
 
 def fetch_pages_missing_field() -> list[dict]:
@@ -91,18 +87,28 @@ def tmdb_details(kind: str, tmdb_id: int) -> dict:
   return response.json()
 
 
-def tmdb_to_notion_props(info: dict) -> dict:
-  """
-  Build a Notion `properties` payload by:
-    1) Using PROP_HANDLERS for known props
-    2) Falling back to a raw lookup → rich_text or number
-    3) Emitting {prop_type: None} if missing
-  """
+def _is_empty(notion_prop: dict, prop_type: str) -> bool:
+  val = notion_prop.get(prop_type)
+  if val is None:
+    return True
+  if isinstance(val, list):
+    return len(val) == 0
+  if isinstance(val, str):
+    return val == ""
+  return False
+
+
+def tmdb_to_notion_props(info: dict, page_props: dict) -> dict:
+  """Build a Notion properties payload for fields that are currently empty on the page."""
   props: dict[str, dict] = {}
 
   for prop_name, prop_type in settings.empty_map.items():
+    if not _is_empty(page_props.get(prop_name, {}), prop_type):
+      continue
     if handler := PROP_HANDLERS.get(prop_name):
-      props[prop_name] = handler(info)
+      result = handler(info)
+      if result is not None:
+        props[prop_name] = result
       continue
 
     # generic fallback
@@ -118,25 +124,28 @@ def tmdb_to_notion_props(info: dict) -> dict:
             {"type": "text", "text": {"content": str(raw)}}
           ]
         }
-    else:
-      props[prop_name] = {prop_type: None}
+    # else: no value from TMDB — skip rather than send null
 
   return props
 
 
 def process_page(page: dict):
   """Fetch TMDB info for one Notion row and update it."""
-  title_block = page["properties"][settings.title_prop]["title"]
-  title = title_block[0]["text"]["content"] if title_block else ""
+  title = ""
   try:
+    title_block = page["properties"][settings.title_prop]["title"]
+    title = title_block[0]["text"]["content"] if title_block else ""
+
     # derive kind from Notion select or fallback
     select = page["properties"].get("Type", {}).get("select")
     raw_kind = (select or {}).get("name", "").lower()
     kind = "movie" if raw_kind in ("movie", "film") else "tv"
+    if not raw_kind:
+      logging.warning("No Type set for '%s', defaulting to tv", title)
 
     tmdb_id = tmdb_search(kind, title)
     info = tmdb_details(kind, tmdb_id)
-    props  = tmdb_to_notion_props(info)
+    props  = tmdb_to_notion_props(info, page["properties"])
 
     notion.pages.update(page_id=page["id"], properties=props)
     logging.info("Updated '%s'", title)

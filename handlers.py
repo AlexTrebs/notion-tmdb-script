@@ -10,9 +10,9 @@ def get_directors(crew: list[dict]) -> list[str]:
   return [m["name"] for m in crew if m.get("job") == "Director"]
 
 PROP_HANDLERS: dict[str, DefHandler] = {
-  "Poster": lambda info: {
-    "url":settings.img_base + info.get("poster_path", ""),
-  },
+  "Poster": lambda info: (
+    {"url": settings.img_base + info["poster_path"]} if info.get("poster_path") else None
+  ),
   "Genre": lambda info: {
     "multi_select": [{"name": g["name"]} for g in info.get("genres", [])]
   },
@@ -20,14 +20,14 @@ PROP_HANDLERS: dict[str, DefHandler] = {
     "rich_text": [
       {
         "type": "text",
-        "text": {"content": ", ".join(get_directors(info["credits"]["crew"]))},
+        "text": {"content": ", ".join(get_directors(info.get("credits", {}).get("crew", [])))},
       }
     ]
   },
+  "Release Date": lambda info: (
+    {"date": {"start": info["release_date"]}} if info.get("release_date") else None
+  ),
   "Studio / Distributor": lambda info: {
     "multi_select": [{"name": c["name"]} for c in info.get("production_companies", [])]
-  },
-  "Type": lambda info: {
-    "select": {"name": "Movie" if settings.default_kind == "movie" else "Series"}
   },
 }
